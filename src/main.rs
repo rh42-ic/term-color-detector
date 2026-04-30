@@ -151,13 +151,77 @@ fn query_terminal(timeout_ms: u64) -> Result<String, Error> {
     }
 }
 
+fn parse_rgb(resp: &str) -> Option<(u8, u8, u8)> {
+    // Look for "]11;rgb:"
+    let start_idx = resp.find("]11;rgb:")?;
+    let rgb_str = &resp[start_idx + 8..];
+    
+    let parts: Vec<&str> = rgb_str.split('/').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    // Parse the first 2 characters of each component as hex
+    let r_str = parts[0].get(0..2).unwrap_or(parts[0]);
+    let g_str = parts[1].get(0..2).unwrap_or(parts[1]);
+    let b_str = parts[2].split('\x07').next()?.split('\x1b').next()?;
+    let b_str = b_str.get(0..2).unwrap_or(b_str);
+
+    let r = u8::from_str_radix(r_str, 16).ok()?;
+    let g = u8::from_str_radix(g_str, 16).ok()?;
+    let b = u8::from_str_radix(b_str, 16).ok()?;
+
+    Some((r, g, b))
+}
+
+fn calculate_luma(r: u8, g: u8, b: u8) -> u8 {
+    let l_int = (r as u32 * 2627 + g as u32 * 6780 + b as u32 * 593) / 10000;
+    l_int as u8
+}
+
+fn print_failure(config: &Config) {
+    match config.mode {
+        OutputMode::DarkLight => print!("dark"),
+        OutputMode::Rgb => print!("0"),
+        OutputMode::Luma => print!("0"),
+    }
+    process::exit(1);
+}
+
 fn main() {
     let config = parse_args();
-    match query_terminal(config.timeout_ms) {
-        Ok(resp) => println!("Response: {:?}", resp),
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            process::exit(1);
+    
+    let resp = match query_terminal(config.timeout_ms) {
+        Ok(r) => r,
+        Err(_) => {
+            print_failure(&config);
+            unreachable!();
+        }
+    };
+
+    let (r, g, b) = match parse_rgb(&resp) {
+        Some(rgb) => rgb,
+        None => {
+            print_failure(&config);
+            unreachable!();
+        }
+    };
+
+    match config.mode {
+        OutputMode::DarkLight => {
+            let luma = calculate_luma(r, g, b);
+            if luma > 153 {
+                print!("light");
+            } else {
+                print!("dark");
+            }
+        }
+        OutputMode::Rgb => {
+            print!("#{:-02X}{:02X}{:02X}", r, g, b);
+        }
+        OutputMode::Luma => {
+            print!("{}", calculate_luma(r, g, b));
         }
     }
+    process::exit(0);
 }
