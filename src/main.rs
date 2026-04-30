@@ -182,7 +182,7 @@ mod tty {
                     ptr::null_mut(),
                     OPEN_EXISTING,
                     0,
-                    0,
+                    ptr::null_mut(),
                 );
                 
                 let out_handle = CreateFileA(
@@ -192,7 +192,7 @@ mod tty {
                     ptr::null_mut(),
                     OPEN_EXISTING,
                     0,
-                    0,
+                    ptr::null_mut(),
                 );
 
                 if in_handle == INVALID_HANDLE_VALUE || out_handle == INVALID_HANDLE_VALUE {
