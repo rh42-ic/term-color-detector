@@ -1,3 +1,5 @@
+简体中文 [README.zh-CN.md](./README.zh-CN.md) | English
+
 # term-color-detector
 
 A fast, zero-dependency CLI tool to detect terminal colors (background, foreground, cursor, or palette) or extract their RGB/Luma values.
@@ -6,9 +8,8 @@ The core detection logic is extracted from [Yazi](https://github.com/sxyazi/yazi
 
 ## Features
 
-- **Extreme Speed**: Bypasses heavy TUI libraries or async runtimes. Uses direct `/dev/tty` syscalls via `libc` and raw terminal mode `termios`.
-- **Zero-Cost Math**: Computes the Luma value using the BT.709 standard formula (`Y ≈ 0.2126 R + 0.7152 G + 0.0722 B`) exclusively through integer bit-shifting for maximum performance.
-- **Fail-Safe**: Includes a strict configurable timeout (default 50ms). In environments where OSC queries are unsupported or hanging, `tcdet` will safely exit with a default response and a `1` exit code, never hanging your scripts.
+- **Speed**: Uses direct `/dev/tty` syscalls via `libc` and raw terminal mode `termios`.
+- **Fail-Safe**: Includes a strict configurable timeout (default 500ms). In environments where OSC queries are unsupported or hanging, `tcdet` will safely exit with a default response and a `1` exit code, never hanging your scripts.
 
 ## Installation
 
@@ -26,6 +27,7 @@ cp target/release/tcdet ~/.local/bin/
 ```
 
 ### Pre-built Binaries
+
 GitHub Actions automatically builds and publishes binaries for Linux (gnu/musl), macOS (x86_64/arm64), and Windows (x86_64) on every release tag. Check the [Releases](https://github.com/rh42-ic/term-color-detector/releases) page.
 
 ## Usage
@@ -36,67 +38,78 @@ tcdet [TARGET] [FORMAT] [-t <ms>]
 
 ### Options
 
-`tcdet` uses an orthogonal flag design: you pick **one target** to query and **one format** for the output.
+`tcdet` uses an orthogonal design: you pick one **Target** to query and one **Format** for the output.
 
 #### Targets (What to query)
-If no target is specified, `-b` (Background) is used.
 
-| Flag | Long Flag | Description | OSC Code |
-|------|-----------|-------------|----------|
-| `-b` | `--bg` | **[Default]** Background color | OSC 11 |
-| `-f` | `--fg` | Foreground color | OSC 10 |
-| `-c` | `--cursor`| Cursor color | OSC 12 |
-| `-p` | `--palette <idx>` | Palette color at index | OSC 4 |
-| `-o` | `--osc <code>`| Raw OSC query code | Custom |
+_If omitted, defaults to Background (`-b`)._
+
+| Flag        | Long Flag   | Description                    | OSC Code |
+| :---------- | :---------- | :----------------------------- | :------- |
+| `-b`        | `--bg`      | **Background** color (Default) | OSC 11   |
+| `-f`        | `--fg`      | **Foreground** color           | OSC 10   |
+| `-c`        | `--cursor`  | **Cursor** color               | OSC 12   |
+| `-p <n>`    | `--palette` | **Palette** color at index `n` | OSC 4;n  |
+| `-o <code>` | `--osc`     | **Raw** OSC query code         | Custom   |
 
 #### Formats (How to output)
-If no format is specified, `-s` (Scheme) is used.
 
-| Flag | Long Flag | Description | Success Output | Timeout / Failure | Exit Code |
-|------|-----------|-------------|----------------|-------------------|-----------|
-| `-s` | `--scheme` | **[Default]** Dark/Light mode | `dark` or `light` | `dark` | 0 (Success) / 1 (Failure) |
-| `-r` | `--rgb` | RGB Hex format | e.g., `#1E1E2E` | `#000000` | 0 (Success) / 1 (Failure) |
-| `-l` | `--luma` | Luma value | Integer `0-255` | `0` | 0 (Success) / 1 (Failure) |
+_If omitted, defaults to Scheme (`-s`)._
 
-#### General Options
+| Flag | Long Flag  | Output on Success | Fallback / Timeout |
+| :--- | :--------- | :---------------- | :----------------- |
+| `-s` | `--scheme` | `dark` or `light` | `dark`             |
+| `-r` | `--rgb`    | `#RRGGBB` (Hex)   | `#000000`          |
+| `-l` | `--luma`   | `0-255` (Integer) | `0`                |
 
-| Flag | Long Flag | Description | Default |
-|------|-----------|-------------|---------|
-| `-t` | `--timeout <ms>`| Timeout for the terminal response | `500` ms |
-| `-h` | `--help` | Show help message | |
+#### General
+
+| Flag      | Long Flag   | Description                     | Default |
+| :-------- | :---------- | :------------------------------ | :------ |
+| `-t <ms>` | `--timeout` | Wait time for terminal response | `500ms` |
+| `-h`      | `--help`    | Display help message            |         |
 
 ### Examples
 
-**1. Basic Theme Detection (Background)**
+**1. Shell Configuration (.bashrc/.zshrc)**
+The most common use case is dynamically setting themes for your CLI tools. Since `tcdet` returns a non-zero exit code on failure, you can easily provide a fallback value within your script.
+
 ```bash
-THEME=$(tcdet)
-if [ "$THEME" = "light" ]; then
-    echo "Terminal is light!"
+# Detect terminal color scheme (default to 'light' on failure or timeout)
+# We use a 200ms timeout to account for network latency in SSH
+if THEME=$(tcdet -s -t 200 2>/dev/null); then
+    export TERMINAL_SCHEME="$THEME"
 else
-    echo "Terminal is dark!"
+    export TERMINAL_SCHEME="light"
+fi
+
+# Example usage: Set theme for 'bat' and 'starship'
+if [ "$TERMINAL_SCHEME" = "light" ]; then
+    export BAT_THEME="GitHub"
+    export STARSHIP_CONFIG="$HOME/.config/starship.light.toml"
+else
+    export BAT_THEME="Catppuccin-Mocha"
+    export STARSHIP_CONFIG="$HOME/.config/starship.dark.toml"
 fi
 ```
 
-**2. Getting Foreground RGB**
-```bash
-$ tcdet -f -r
-#D9E0EE
-```
+**2. Getting Foreground Luma**
+Get an integer from 0 - 255 representing brightness. With this number, you can easily use custom light/dark thresholds.
 
-**3. Getting Cursor Luma**
 ```bash
-$ tcdet -c -l
+$ tcdet -f -l
 200
 ```
 
-**4. Getting Palette Color 4 in RGB**
+**3. Getting Palette Color 4 in RGB**
+
 ```bash
 $ tcdet -p 4 -r
 #F28FAD
 ```
 
-**5. Adjusting the Timeout**
-For local terminals, single-digit milliseconds are usually enough. However, over a remote SSH connection, the terminal's response time depends on the network's Round-Trip Time (RTT). If the timeout is set too short, `tcdet` will exit and the late-arriving response will leak into your terminal prompt as ugly raw text (like `]11;rgb:0000/0000/0000\`).
+**4. Adjusting the Timeout**
+For local terminals, single-digit milliseconds are usually enough. However, over a remote SSH connection, the terminal's response time depends on the network's Round-Trip Time (RTT). If the timeout is set too short, `tcdet` will exit and the late-arriving response will leak into your terminal prompt as ugly raw text (like `]11;rgb:0000/0000/0000\`). It's best not to set it too small.
 
 ```bash
 $ tcdet -b -s -t 1000
