@@ -2,22 +2,24 @@ use std::env;
 use std::process;
 
 #[derive(Debug, PartialEq)]
-enum OutputMode {
-    DarkLight,
+enum OutputFormat {
+    Scheme,
     Rgb,
     Luma,
 }
 
 #[derive(Debug)]
 struct Config {
-    mode: OutputMode,
+    format: OutputFormat,
+    osc_code: String,
     timeout_ms: u64,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            mode: OutputMode::DarkLight,
+            format: OutputFormat::Scheme,
+            osc_code: "11".to_string(),
             timeout_ms: 500,
         }
     }
@@ -29,10 +31,37 @@ fn parse_args() -> Config {
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "-d" => config.mode = OutputMode::DarkLight,
-            "-r" => config.mode = OutputMode::Rgb,
-            "-l" => config.mode = OutputMode::Luma,
-            "-t" => {
+            // Format Arguments
+            "-s" | "--scheme" => config.format = OutputFormat::Scheme,
+            "-r" | "--rgb" => config.format = OutputFormat::Rgb,
+            "-l" | "--luma" => config.format = OutputFormat::Luma,
+            
+            // Legacy format fallback for compatibility
+            "-d" => config.format = OutputFormat::Scheme,
+            
+            // Target Arguments
+            "-b" | "--bg" => config.osc_code = "11".to_string(),
+            "-f" | "--fg" => config.osc_code = "10".to_string(),
+            "-c" | "--cursor" => config.osc_code = "12".to_string(),
+            "-p" | "--palette" => {
+                if let Some(val) = args.next() {
+                    config.osc_code = format!("4;{}", val);
+                } else {
+                    eprintln!("Missing palette index");
+                    process::exit(1);
+                }
+            }
+            "-o" | "--osc" => {
+                if let Some(val) = args.next() {
+                    config.osc_code = val.replace(",", ";").replace(":", ";");
+                } else {
+                    eprintln!("Missing OSC code");
+                    process::exit(1);
+                }
+            }
+            
+            // General Arguments
+            "-t" | "--timeout" => {
                 if let Some(val) = args.next() {
                     if let Ok(ms) = val.parse::<u64>() {
                         config.timeout_ms = ms;
@@ -46,11 +75,20 @@ fn parse_args() -> Config {
                 }
             }
             "-h" | "--help" => {
-                println!("Usage: term-bg [-d|-r|-l] [-t <ms>]");
-                println!("  -d  Output 'dark' or 'light' (default)");
-                println!("  -r  Output RGB hex (e.g., #RRGGBB)");
-                println!("  -l  Output luma value (0-255)");
-                println!("  -t  Timeout in milliseconds (default 50)");
+                println!("Usage: tcdet [TARGET] [FORMAT] [OPTIONS]");
+                println!("Targets (Mutually Exclusive):");
+                println!("  -b, --bg          Query background color (OSC 11) [Default]");
+                println!("  -f, --fg          Query foreground color (OSC 10)");
+                println!("  -c, --cursor      Query cursor color (OSC 12)");
+                println!("  -p, --palette <N> Query ANSI palette color (OSC 4;N)");
+                println!("  -o, --osc <CODE>  Query raw OSC code");
+                println!("Formats (Mutually Exclusive):");
+                println!("  -s, --scheme      Output 'dark' or 'light' [Default]");
+                println!("  -r, --rgb         Output RGB hex (e.g., #RRGGBB)");
+                println!("  -l, --luma        Output luma value (0-255)");
+                println!("Options:");
+                println!("  -t, --timeout <ms> Timeout in milliseconds (default 500)");
+                println!("  -h, --help        Print help");
                 process::exit(0);
             }
             _ => {
@@ -113,9 +151,10 @@ mod tty {
         }
     }
 
-    pub fn query_terminal(timeout_ms: u64) -> Result<String, Error> {
+    pub fn query_terminal(osc_code: &str, timeout_ms: u64) -> Result<String, Error> {
         let tty = TtyState::new()?;
-        let query = b"\x1b]11;?\x07";
+        let query_str = format!("\x1b]{};?\x07", osc_code);
+        let query = query_str.as_bytes();
 
         unsafe {
             if write(tty.fd, query.as_ptr() as *const libc::c_void, query.len()) < 0 {
@@ -234,9 +273,10 @@ mod tty {
         }
     }
 
-    pub fn query_terminal(timeout_ms: u64) -> Result<String, Error> {
+    pub fn query_terminal(osc_code: &str, timeout_ms: u64) -> Result<String, Error> {
         let tty = TtyState::new()?;
-        let query = b"\x1b]11;?\x07";
+        let query_str = format!("\x1b]{};?\x07", osc_code);
+        let query = query_str.as_bytes();
 
         unsafe {
             let mut written = 0;
@@ -263,10 +303,10 @@ mod tty {
 
 use tty::query_terminal;
 
-fn parse_rgb(resp: &str) -> Option<(u8, u8, u8)> {
-    // Look for "]11;rgb:"
-    let start_idx = resp.find("]11;rgb:")?;
-    let rgb_str = &resp[start_idx + 8..];
+fn parse_rgb(osc_code: &str, resp: &str) -> Option<(u8, u8, u8)> {
+    let search_pattern = format!("]{};rgb:", osc_code);
+    let start_idx = resp.find(&search_pattern)?;
+    let rgb_str = &resp[start_idx + search_pattern.len()..];
     
     let parts: Vec<&str> = rgb_str.split('/').collect();
     if parts.len() < 3 {
@@ -292,10 +332,10 @@ fn calculate_luma(r: u8, g: u8, b: u8) -> u8 {
 }
 
 fn print_failure(config: &Config) {
-    match config.mode {
-        OutputMode::DarkLight => print!("dark"),
-        OutputMode::Rgb => print!("#000000"),
-        OutputMode::Luma => print!("0"),
+    match config.format {
+        OutputFormat::Scheme => print!("dark"),
+        OutputFormat::Rgb => print!("#000000"),
+        OutputFormat::Luma => print!("0"),
     }
     process::exit(1);
 }
@@ -303,7 +343,7 @@ fn print_failure(config: &Config) {
 fn main() {
     let config = parse_args();
     
-    let resp = match query_terminal(config.timeout_ms) {
+    let resp = match query_terminal(&config.osc_code, config.timeout_ms) {
         Ok(r) => r,
         Err(_) => {
             print_failure(&config);
@@ -311,7 +351,7 @@ fn main() {
         }
     };
 
-    let (r, g, b) = match parse_rgb(&resp) {
+    let (r, g, b) = match parse_rgb(&config.osc_code, &resp) {
         Some(rgb) => rgb,
         None => {
             print_failure(&config);
@@ -319,8 +359,8 @@ fn main() {
         }
     };
 
-    match config.mode {
-        OutputMode::DarkLight => {
+    match config.format {
+        OutputFormat::Scheme => {
             let luma = calculate_luma(r, g, b);
             if luma > 153 {
                 print!("light");
@@ -328,10 +368,10 @@ fn main() {
                 print!("dark");
             }
         }
-        OutputMode::Rgb => {
+        OutputFormat::Rgb => {
             print!("#{:-02X}{:02X}{:02X}", r, g, b);
         }
-        OutputMode::Luma => {
+        OutputFormat::Luma => {
             print!("{}", calculate_luma(r, g, b));
         }
     }

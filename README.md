@@ -1,14 +1,14 @@
 # term-color-detector
 
-A fast, zero-dependency CLI tool to detect the terminal's background color (dark or light) or extract its RGB/Luma values. 
+A fast, zero-dependency CLI tool to detect terminal colors (background, foreground, cursor, or palette) or extract their RGB/Luma values.
 
-The background detection logic is extracted from [Yazi](https://github.com/sxyazi/yazi), fully optimized for speed and binary size to be seamlessly integrated into scripts.
+The core detection logic is extracted from [Yazi](https://github.com/sxyazi/yazi), fully optimized for speed and binary size to be seamlessly integrated into scripts.
 
 ## Features
 
 - **Extreme Speed**: Bypasses heavy TUI libraries or async runtimes. Uses direct `/dev/tty` syscalls via `libc` and raw terminal mode `termios`.
 - **Zero-Cost Math**: Computes the Luma value using the BT.709 standard formula (`Y ≈ 0.2126 R + 0.7152 G + 0.0722 B`) exclusively through integer bit-shifting for maximum performance.
-- **Fail-Safe**: Includes a strict configurable timeout (default 50ms). In environments where OSC 11 queries are unsupported or hanging, `tcdet` will safely exit with a default response and a `1` exit code, never hanging your scripts.
+- **Fail-Safe**: Includes a strict configurable timeout (default 50ms). In environments where OSC queries are unsupported or hanging, `tcdet` will safely exit with a default response and a `1` exit code, never hanging your scripts.
 
 ## Installation
 
@@ -31,23 +31,43 @@ GitHub Actions automatically builds and publishes binaries for Linux (gnu/musl),
 ## Usage
 
 ```bash
-tcdet [-d|-r|-l] [-t <ms>]
+tcdet [TARGET] [FORMAT] [-t <ms>]
 ```
 
 ### Options
 
-| Flag | Description | Success Output | Timeout / Failure Output | Exit Code |
-|------|-------------|----------------|--------------------------|-----------|
-| `-d` | **[Default]** Dark/Light mode | `dark` or `light` | `dark` | 0 (Success) / 1 (Failure) |
-| `-r` | RGB Hex format | e.g., `#1E1E2E` | `#000000` | 0 (Success) / 1 (Failure) |
-| `-l` | Luma value | Integer `0-255` | `0` | 0 (Success) / 1 (Failure) |
-| `-t` | Timeout in ms | (No output) | (No output) | N/A (Default: 50ms) |
+`tcdet` uses an orthogonal flag design: you pick **one target** to query and **one format** for the output.
+
+#### Targets (What to query)
+If no target is specified, `-b` (Background) is used.
+
+| Flag | Long Flag | Description | OSC Code |
+|------|-----------|-------------|----------|
+| `-b` | `--bg` | **[Default]** Background color | OSC 11 |
+| `-f` | `--fg` | Foreground color | OSC 10 |
+| `-c` | `--cursor`| Cursor color | OSC 12 |
+| `-p` | `--palette <idx>` | Palette color at index | OSC 4 |
+| `-o` | `--osc <code>`| Raw OSC query code | Custom |
+
+#### Formats (How to output)
+If no format is specified, `-s` (Scheme) is used.
+
+| Flag | Long Flag | Description | Success Output | Timeout / Failure | Exit Code |
+|------|-----------|-------------|----------------|-------------------|-----------|
+| `-s` | `--scheme` | **[Default]** Dark/Light mode | `dark` or `light` | `dark` | 0 (Success) / 1 (Failure) |
+| `-r` | `--rgb` | RGB Hex format | e.g., `#1E1E2E` | `#000000` | 0 (Success) / 1 (Failure) |
+| `-l` | `--luma` | Luma value | Integer `0-255` | `0` | 0 (Success) / 1 (Failure) |
+
+#### General Options
+
+| Flag | Long Flag | Description | Default |
+|------|-----------|-------------|---------|
+| `-t` | `--timeout <ms>`| Timeout for the terminal response | `500` ms |
+| `-h` | `--help` | Show help message | |
 
 ### Examples
 
-**1. Basic Theme Detection**
-Most common use case. Easily assign a variable based on the output.
-
+**1. Basic Theme Detection (Background)**
 ```bash
 THEME=$(tcdet)
 if [ "$THEME" = "light" ]; then
@@ -57,61 +77,29 @@ else
 fi
 ```
 
-**2. Getting Raw RGB**
+**2. Getting Foreground RGB**
 ```bash
-$ tcdet -r
-#1E1E2E
+$ tcdet -f -r
+#D9E0EE
 ```
 
-**3. Adjusting the Timeout**
-If you are over a slow SSH connection, you might want to increase the wait time to 200ms.
+**3. Getting Cursor Luma**
 ```bash
-$ tcdet -d -t 200
-dark
+$ tcdet -c -l
+200
 ```
 
-### Pre-built Binaries
-GitHub Actions automatically builds and publishes binaries for Linux (gnu/musl), macOS (x86_64/arm64), and Windows (x86_64) on every release tag. Check the [Releases](https://github.com/rh42-ic/term-bg/releases) page.
-
-## Usage
-
+**4. Getting Palette Color 4 in RGB**
 ```bash
-term-bg [-d|-r|-l] [-t <ms>]
+$ tcdet -p 4 -r
+#F28FAD
 ```
 
-### Options
-
-| Flag | Description | Success Output | Timeout / Failure Output | Exit Code |
-|------|-------------|----------------|--------------------------|-----------|
-| `-d` | **[Default]** Dark/Light mode | `dark` or `light` | `dark` | 0 (Success) / 1 (Failure) |
-| `-r` | RGB Hex format | e.g., `#1E1E2E` | `#000000` | 0 (Success) / 1 (Failure) |
-| `-l` | Luma value | Integer `0-255` | `0` | 0 (Success) / 1 (Failure) |
-| `-t` | Timeout in ms | (No output) | (No output) | N/A (Default: 500ms) |
-
-### Examples
-
-**1. Basic Theme Detection**
-Most common use case. Easily assign a variable based on the output.
+**5. Adjusting the Timeout**
+For local terminals, single-digit milliseconds are usually enough. However, over a remote SSH connection, the terminal's response time depends on the network's Round-Trip Time (RTT). If the timeout is set too short, `tcdet` will exit and the late-arriving response will leak into your terminal prompt as ugly raw text (like `]11;rgb:0000/0000/0000\`).
 
 ```bash
-THEME=$(tcdet)
-if [ "$THEME" = "light" ]; then
-    echo "Terminal is light!"
-else
-    echo "Terminal is dark!"
-fi
-```
-
-**2. Getting Raw RGB**
-```bash
-$ tcdet -r
-#1E1E2E
-```
-
-**3. Adjusting the Timeout**
-If you are over a slow SSH connection, you might want to increase the wait time to 200ms.
-```bash
-$ tcdet -d -t 200
+$ tcdet -b -s -t 1000
 dark
 ```
 
@@ -119,11 +107,11 @@ dark
 
 1. Saves current `termios` state.
 2. Enters raw mode (`ECHO` and `ICANON` disabled).
-3. Sends the standard OSC 11 query: `\x1b]11;?\x07`
-4. Uses `select` to poll for the response (usually formatted as `\x1b]11;rgb:RRRR/GGGG/BBBB\x07`) within the timeout window.
-5. Parses the RGB components.
+3. Sends the appropriate OSC query based on the target (e.g., `\x1b]11;?\x07` for background, `\x1b]10;?\x07` for foreground).
+4. Uses `select` to poll for the response (e.g., `\x1b]11;rgb:RRRR/GGGG/BBBB\x07`) within the timeout window.
+5. Parses the RGB components from the response.
 6. Calculates the Luma using the integer-optimized BT.709 formula: `(R*218 + G*732 + B*74 + 512) >> 10`.
-7. Checks if the Luma crosses the `153` threshold to determine `light` or `dark`.
+7. Checks if the Luma crosses the `153` threshold to determine `light` or `dark` (if scheme format is requested).
 8. Restores the exact `termios` state and exits.
 
 ## Credits
