@@ -9,7 +9,7 @@ The core detection logic is extracted from [Yazi](https://github.com/sxyazi/yazi
 ## Features
 
 - **Speed**: Uses direct `/dev/tty` syscalls via `libc` and raw terminal mode `termios`.
-- **Fail-Safe**: Includes a strict configurable timeout (default 500ms). In environments where OSC queries are unsupported or hanging, `tcdet` will safely exit with a default response and a `1` exit code, never hanging your scripts.
+- **Fail-Safe**: Includes a strict configurable timeout (default 500ms). In environments where OSC queries are unsupported or hanging, `term-color-det` will safely exit with a default response and a `1` exit code, never hanging your scripts.
 
 ## Installation
 
@@ -23,7 +23,7 @@ cargo build --release
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
 
-cp target/release/tcdet ~/.local/bin/
+cp target/release/term-color-det ~/.local/bin/
 ```
 
 ### Pre-built Binaries
@@ -33,12 +33,12 @@ GitHub Actions automatically builds and publishes binaries for Linux (gnu/musl),
 ## Usage
 
 ```bash
-tcdet [TARGET] [FORMAT] [-t <ms>]
+term-color-det [TARGET] [FORMAT] [-t <ms>]
 ```
 
 ### Options
 
-`tcdet` uses an orthogonal design: you pick one **Target** to query and one **Format** for the output.
+`term-color-det` uses an orthogonal design: you pick one **Target** to query and one **Format** for the output.
 
 #### Targets (What to query)
 
@@ -46,11 +46,11 @@ _If omitted, defaults to Background (`-b`)._
 
 | Flag        | Long Flag   | Description                    | OSC Code |
 | :---------- | :---------- | :----------------------------- | :------- |
-| `-b`        | `--bg`      | **Background** color (Default) | OSC 11   |
-| `-f`        | `--fg`      | **Foreground** color           | OSC 10   |
-| `-c`        | `--cursor`  | **Cursor** color               | OSC 12   |
-| `-p <n>`    | `--palette` | **Palette** color at index `n` | OSC 4;n  |
-| `-o <code>` | `--osc`     | **Raw** OSC query code         | Custom   |
+| `-b`        | `--background` | **Background** color (Default) | OSC 11   |
+| `-f`        | `--foreground` | **Foreground** color           | OSC 10   |
+| `-c`        | `--cursor`     | **Cursor** color               | OSC 12   |
+| `-p <n>`    | `--palette`    | **Palette** color at index `n` | OSC 4;n  |
+| `-o <code>` | `--osc`        | **Raw** OSC query code         | Custom   |
 
 #### Formats (How to output)
 
@@ -67,17 +67,18 @@ _If omitted, defaults to Scheme (`-s`)._
 | Flag      | Long Flag   | Description                     | Default |
 | :-------- | :---------- | :------------------------------ | :------ |
 | `-t <ms>` | `--timeout` | Wait time for terminal response | `500ms` |
+|           | `--rtt`     | Print Round-Trip Time (RTT)     |         |
 | `-h`      | `--help`    | Display help message            |         |
 
 ### Examples
 
 **1. Shell Configuration (.bashrc/.zshrc)**
-The most common use case is dynamically setting themes for your CLI tools. Since `tcdet` returns a non-zero exit code on failure, you can easily provide a fallback value within your script.
+The most common use case is dynamically setting themes for your CLI tools. Since `term-color-det` returns a non-zero exit code on failure, you can easily provide a fallback value within your script.
 
 ```bash
 # Detect terminal color scheme (default to 'light' on failure or timeout)
 # We use a 200ms timeout to account for network latency in SSH
-if THEME=$(tcdet -s -t 200 2>/dev/null); then
+if THEME=$(term-color-det -s -t 200 2>/dev/null); then
     export TERMINAL_SCHEME="$THEME"
 else
     export TERMINAL_SCHEME="light"
@@ -97,22 +98,22 @@ fi
 Get an integer from 0 - 255 representing brightness. With this number, you can easily use custom light/dark thresholds.
 
 ```bash
-$ tcdet -f -l
+$ term-color-det -f -l
 200
 ```
 
 **3. Getting Palette Color 4 in RGB**
 
 ```bash
-$ tcdet -p 4 -r
+$ term-color-det -p 4 -r
 #F28FAD
 ```
 
 **4. Adjusting the Timeout**
-For local terminals, single-digit milliseconds are usually enough. However, over a remote SSH connection, the terminal's response time depends on the network's Round-Trip Time (RTT). If the timeout is set too short, `tcdet` will exit and the late-arriving response will leak into your terminal prompt as ugly raw text (like `]11;rgb:0000/0000/0000\`). It's best not to set it too small.
+For local terminals, single-digit milliseconds are usually enough. However, over a remote SSH connection, the terminal's response time depends on the network's Round-Trip Time (RTT). If the timeout is set too short, `term-color-det` will exit and the late-arriving response will leak into your terminal prompt as ugly raw text (like `]11;rgb:0000/0000/0000\`). It's best not to set it too small.
 
 ```bash
-$ tcdet -b -s -t 1000
+$ term-color-det -b -s -t 1000
 dark
 ```
 

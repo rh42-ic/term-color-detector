@@ -13,6 +13,7 @@ struct Config {
     format: OutputFormat,
     osc_code: String,
     timeout_ms: u64,
+    show_rtt: bool,
 }
 
 impl Default for Config {
@@ -21,6 +22,7 @@ impl Default for Config {
             format: OutputFormat::Scheme,
             osc_code: "11".to_string(),
             timeout_ms: 500,
+            show_rtt: false,
         }
     }
 }
@@ -40,8 +42,8 @@ fn parse_args() -> Config {
             "-d" => config.format = OutputFormat::Scheme,
             
             // Target Arguments
-            "-b" | "--bg" => config.osc_code = "11".to_string(),
-            "-f" | "--fg" => config.osc_code = "10".to_string(),
+            "-b" | "--background" => config.osc_code = "11".to_string(),
+            "-f" | "--foreground" => config.osc_code = "10".to_string(),
             "-c" | "--cursor" => config.osc_code = "12".to_string(),
             "-p" | "--palette" => {
                 if let Some(val) = args.next() {
@@ -74,11 +76,13 @@ fn parse_args() -> Config {
                     process::exit(1);
                 }
             }
+            "--rtt" => config.show_rtt = true,
             "-h" | "--help" => {
-                println!("Usage: tcdet [TARGET] [FORMAT] [OPTIONS]");
+                println!("Detect terminal colors via OSC queries.");
+                println!("Usage: term-color-det [TARGET] [FORMAT] [OPTIONS]");
                 println!("Targets (Mutually Exclusive):");
-                println!("  -b, --bg          Query background color (OSC 11) [Default]");
-                println!("  -f, --fg          Query foreground color (OSC 10)");
+                println!("  -b, --background  Query background color (OSC 11) [Default]");
+                println!("  -f, --foreground  Query foreground color (OSC 10)");
                 println!("  -c, --cursor      Query cursor color (OSC 12)");
                 println!("  -p, --palette <N> Query ANSI palette color (OSC 4;N)");
                 println!("  -o, --osc <CODE>  Query raw OSC code");
@@ -88,6 +92,7 @@ fn parse_args() -> Config {
                 println!("  -l, --luma        Output luma value (0-255)");
                 println!("Options:");
                 println!("  -t, --timeout <ms> Timeout in milliseconds (default 500)");
+                println!("  --rtt             Print RTT (round-trip time)");
                 println!("  -h, --help        Print help");
                 process::exit(0);
             }
@@ -106,6 +111,7 @@ mod tty {
     use std::ffi::CString;
     use std::io::Error;
     use std::ptr;
+    use std::time::{Duration, Instant};
 
     pub struct TtyState {
         fd: c_int,
@@ -151,45 +157,72 @@ mod tty {
         }
     }
 
-    pub fn query_terminal(osc_code: &str, timeout_ms: u64) -> Result<String, Error> {
+    pub fn query_terminal(osc_code: &str, timeout_ms: u64) -> Result<(String, Duration), Error> {
         let tty = TtyState::new()?;
         let query_str = format!("\x1b]{};?\x07", osc_code);
         let query = query_str.as_bytes();
 
+        let start = Instant::now();
         unsafe {
             if write(tty.fd, query.as_ptr() as *const libc::c_void, query.len()) < 0 {
                 return Err(Error::last_os_error());
             }
 
-            let mut read_fds: fd_set = std::mem::zeroed();
-            FD_ZERO(&mut read_fds);
-            FD_SET(tty.fd, &mut read_fds);
+            let mut response = Vec::new();
+            let mut buf = [0u8; 1024];
+            let timeout_duration = Duration::from_millis(timeout_ms);
 
-            let mut timeout = timeval {
-                tv_sec: (timeout_ms / 1000) as libc::time_t,
-                tv_usec: ((timeout_ms % 1000) * 1000) as libc::suseconds_t,
-            };
+            loop {
+                let elapsed = start.elapsed();
+                if elapsed >= timeout_duration {
+                    break;
+                }
+                let remaining = timeout_duration - elapsed;
 
-            let ret = select(
-                tty.fd + 1,
-                &mut read_fds,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                &mut timeout,
-            );
+                let mut read_fds: fd_set = std::mem::zeroed();
+                FD_ZERO(&mut read_fds);
+                FD_SET(tty.fd, &mut read_fds);
 
-            if ret <= 0 {
-                // Timeout or error
+                let mut timeout = timeval {
+                    tv_sec: remaining.as_secs() as libc::time_t,
+                    tv_usec: remaining.subsec_micros() as libc::suseconds_t,
+                };
+
+                let ret = select(
+                    tty.fd + 1,
+                    &mut read_fds,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    &mut timeout,
+                );
+
+                if ret < 0 {
+                    return Err(Error::last_os_error());
+                } else if ret == 0 {
+                    break; // Timeout
+                }
+
+                let n = read(tty.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len());
+                if n < 0 {
+                    return Err(Error::last_os_error());
+                } else if n == 0 {
+                    break;
+                }
+
+                response.extend_from_slice(&buf[..n as usize]);
+
+                // Check for terminator: BEL (\x07) or ST (\x1b\\)
+                if response.ends_with(&[0x07]) || response.ends_with(&[0x1b, 0x5c]) {
+                    break;
+                }
+            }
+
+            if response.is_empty() {
                 return Err(Error::from_raw_os_error(libc::ETIMEDOUT));
             }
 
-            let mut buf = [0u8; 64];
-            let n = read(tty.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len());
-            if n < 0 {
-                return Err(Error::last_os_error());
-            }
-
-            Ok(String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+            let rtt = start.elapsed();
+            Ok((String::from_utf8_lossy(&response).into_owned(), rtt))
         }
     }
 }
@@ -198,8 +231,9 @@ mod tty {
 mod tty {
     use std::io::Error;
     use std::ptr;
+    use std::time::{Duration, Instant};
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0},
+        Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Storage::FileSystem::{CreateFileA, ReadFile, WriteFile, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
         System::Console::{GetConsoleMode, SetConsoleMode, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT},
         System::Threading::WaitForSingleObject,
@@ -273,30 +307,56 @@ mod tty {
         }
     }
 
-    pub fn query_terminal(osc_code: &str, timeout_ms: u64) -> Result<String, Error> {
+    pub fn query_terminal(osc_code: &str, timeout_ms: u64) -> Result<(String, Duration), Error> {
         let tty = TtyState::new()?;
         let query_str = format!("\x1b]{};?\x07", osc_code);
         let query = query_str.as_bytes();
 
+        let start = Instant::now();
         unsafe {
             let mut written = 0;
             if WriteFile(tty.out_handle, query.as_ptr() as _, query.len() as u32, &mut written, ptr::null_mut()) == 0 {
                 return Err(Error::last_os_error());
             }
 
-            match WaitForSingleObject(tty.in_handle, timeout_ms as u32) {
-                WAIT_OBJECT_0 => {}
-                WAIT_FAILED => return Err(Error::last_os_error()),
-                _ => return Err(Error::from_raw_os_error(110)), // ETIMEDOUT equivalent
+            let mut response = Vec::new();
+            let mut buf = [0u8; 1024];
+            let timeout_duration = Duration::from_millis(timeout_ms);
+
+            loop {
+                let elapsed = start.elapsed();
+                if elapsed >= timeout_duration {
+                    break;
+                }
+                let remaining = timeout_duration - elapsed;
+
+                match WaitForSingleObject(tty.in_handle, remaining.as_millis() as u32) {
+                    WAIT_OBJECT_0 => {
+                        let mut read_bytes = 0;
+                        if ReadFile(tty.in_handle, buf.as_mut_ptr() as _, buf.len() as u32, &mut read_bytes, ptr::null_mut()) == 0 {
+                            return Err(Error::last_os_error());
+                        }
+                        if read_bytes == 0 {
+                            break;
+                        }
+                        response.extend_from_slice(&buf[..read_bytes as usize]);
+
+                        // Check for terminator: BEL (\x07) or ST (\x1b\\)
+                        if response.ends_with(&[0x07]) || response.ends_with(&[0x1b, 0x5c]) {
+                            break;
+                        }
+                    }
+                    WAIT_TIMEOUT => break,
+                    _ => return Err(Error::last_os_error()),
+                }
             }
 
-            let mut buf = [0u8; 64];
-            let mut read_bytes = 0;
-            if ReadFile(tty.in_handle, buf.as_mut_ptr() as _, buf.len() as u32, &mut read_bytes, ptr::null_mut()) == 0 {
-                return Err(Error::last_os_error());
+            if response.is_empty() {
+                return Err(Error::from_raw_os_error(110)); // ETIMEDOUT equivalent
             }
 
-            Ok(String::from_utf8_lossy(&buf[..read_bytes as usize]).into_owned())
+            let rtt = start.elapsed();
+            Ok((String::from_utf8_lossy(&response).into_owned(), rtt))
         }
     }
 }
@@ -343,8 +403,8 @@ fn print_failure(config: &Config) {
 fn main() {
     let config = parse_args();
     
-    let resp = match query_terminal(&config.osc_code, config.timeout_ms) {
-        Ok(r) => r,
+    let (resp, rtt) = match query_terminal(&config.osc_code, config.timeout_ms) {
+        Ok((r, t)) => (r, t),
         Err(_) => {
             print_failure(&config);
             unreachable!();
@@ -375,5 +435,50 @@ fn main() {
             print!("{}", calculate_luma(r, g, b));
         }
     }
+
+    if config.show_rtt {
+        eprintln!("\nrtt: {:?}", rtt);
+    } else {
+        println!();
+    }
     process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_luma() {
+        assert_eq!(calculate_luma(0, 0, 0), 0);
+        assert_eq!(calculate_luma(255, 255, 255), 255);
+        
+        // Red
+        assert_eq!(calculate_luma(255, 0, 0), 54);
+        // Green
+        assert_eq!(calculate_luma(0, 255, 0), 182);
+        // Blue
+        assert_eq!(calculate_luma(0, 0, 255), 18);
+    }
+
+    #[test]
+    fn test_parse_rgb() {
+        let osc_code = "11";
+        
+        // Typical payload with BEL terminator
+        let resp = "\x1b]11;rgb:1a1a/2b2b/3c3c\x07";
+        assert_eq!(parse_rgb(osc_code, resp), Some((0x1a, 0x2b, 0x3c)));
+
+        // Payload with ST terminator
+        let resp = "\x1b]11;rgb:ff00/aa00/bb00\x1b\\";
+        assert_eq!(parse_rgb(osc_code, resp), Some((0xff, 0xaa, 0xbb)));
+
+        // 4-digit hex per color component (some terminals return 16-bit color)
+        let resp = "\x1b]11;rgb:ffff/aaaa/bbbb\x07";
+        assert_eq!(parse_rgb(osc_code, resp), Some((0xff, 0xaa, 0xbb)));
+
+        // Invalid response
+        let resp = "\x1b]11;rgba:1a1a/2b2b/3c3c\x07";
+        assert_eq!(parse_rgb(osc_code, resp), None);
+    }
 }
